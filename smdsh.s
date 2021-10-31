@@ -11,49 +11,36 @@
 # to run:
 # $ clang -nostdlib smdsh.s -o smdsh && ./smdsh
 
-# memory I can use (assuming AVX2 support):
+# usable memory (assuming AVX2 support):
 # x86 registers, r8 - r15
 # xmm0 - xmm7, xmm8 - xmm15, ymm0 - ymm15
 # x87 float registers (or MMX registers)
 # x87 float control registers
 # 128-byte red zone after rsp
 
-# TODO:
-# reload: assembles and launches itself, ship source as .ascii
-# fix encodings (all VEX?)
-# clean up assembly (mov $0 -> xor, etc)
-
 # red zone memory map
 
-# space to store command and args
 .equ Argv, 0
 .equ Argv_arg, 16
-.equ Argv_ptr, 64 # table of 4 *argv elements + NULL
+.equ Argv_ptr, 64 # table of 7 *argv elements + NULL
 .equ Argv_end, 120
 
 .global _start
 
 .text
 
-# fills xmm with val, fill (gpr) clobbered
-.macro Reset_xmm_mask xmm, fill, val
-	mov \val, \fill
-	pinsrb $0, \fill, \xmm
-	vpbroadcastb \xmm, \xmm
-.endm
-
 # read text into str (xmm), clobbering mask (xmm) and returning number of chars in count (gpr)
 .macro Read str, mask, count
 	cmpb $'\n', (%r9) # check if we need to do anything at all
 	jz L2_\@
 
-	movdqu simd_one, \mask
+	vmovdqu simd_one, \mask
 	mov $0, \count
 
 L0_\@:
 	# read()
-	mov $0, %rax
-	mov $0, %rdi
+	xor %rax, %rax
+	xor %rdi, %rdi
 	mov %r9, %rsi
 	mov $1, %rdx
 	syscall
@@ -74,11 +61,11 @@ L0_\@:
 
 	# insert the current string index in mask
 	vpslldq $1, \mask, \mask
-	pinsrb $0, \count, \mask
+	vpinsrb $0, \count, \mask, \mask
 
 	# insert the character read in str
 	vpslldq $1, \str, \str
-	pinsrb $0, (%r9), \str
+	vpinsrb $0, (%r9), \str, \str
 
 	# increment index
 	inc \count
@@ -147,14 +134,6 @@ L1_\@:
 	syscall
 .endm
 
-# finds the index of the first char in mm (xmm/ymm) and writes idx with the result
-.macro Find_idx mem, mm, idx
-	lea \mem, \idx
-	vpcmpeqb (\idx), \mm, %xmm7
-	vpmovmskb %xmm7, \idx
-	bsf \idx, \idx
-.endm
-
 # jumps to dst if str != cmp
 .macro Jmp_str str, cmp, dst
 	pcmpistri $0x18, \cmp, \str
@@ -178,13 +157,21 @@ L1_\@:
 L2_\@:
 .endm
 
+# NOTE: currently unused
+# finds the index of the first char in mm (xmm/ymm) and writes idx with the result
+.macro Find_idx mem, mm, idx
+	lea \mem, \idx
+	vpcmpeqb (\idx), \mm, %xmm7
+	vpmovmskb %xmm7, \idx
+	bsf \idx, \idx
+.endm
+
 _start:
 	lea -128(%rsp), %r9 # legal red zone is rsp - 1 to rsp - 128
 
 	# find **env and put in r8
 	mov (%rsp), %r8 # get argc
 	lea 16(%rsp, %r8, 8), %r8 # put 16 + (rsp + r8 * 8) (**env) in r8
-	#mov (%r8), %r8 # put *env in r8
 
 cpu_check:
 	# check for SSE 4.2
@@ -204,7 +191,7 @@ cpu_check:
 	# check for AVX2
 	Print check_avx2, $(check_avx2_end - check_avx2)
 	mov $7, %rax
-	mov $0, %rcx
+	xor %rcx, %rcx
 	cpuid
 	bt $5, %rbx
 	Check_feature_flag 1
@@ -264,7 +251,6 @@ is_parent:
 	# fork()
 	mov $57, %rax
 	syscall
-	#mov $0, %rax
 
 	# if child, call exec()
 	cmp $0, %rax
@@ -326,7 +312,7 @@ exit:
 cd:
 	# chdir()
 	mov $80, %rax
-	movdqu %xmm1, Argv_arg(%r9)
+	vmovdqu %xmm1, Argv_arg(%r9)
 	lea Argv_arg(%r9), %rdi # new directory
 	syscall
 
