@@ -1,13 +1,5 @@
 # shell entirely within AVX registers
-#
-# rules:
-# 1. no heap memory allocation (malloc, brk, mmap, new processes, etc)
-# 2. no stack allocation (meaning the adjustment of rbp or rsp)
-#      a. red zones are fair game but vary by OS and architecture
-# 3. no calling libraries that violate rules 1 or 2 (including libc)
-# 4. using memory that is already allocated at the start of the program is ok, but don't abuse it
-# 5. storing read only data in .text is ok
-#
+
 # to run:
 # $ clang -nostdlib smdsh.s -o smdsh && ./smdsh
 
