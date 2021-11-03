@@ -13,7 +13,13 @@ A shell that doesn't rely on stack or heap allocation.  Keep commands short; the
 ## Memory used
  - 128-byte red zone after rsp
  - regular x86 and x64 registers
- - xmm0 - xmm7
+ - xmm0 - xmm15
+   - NOTE: AVX2 is required to run smdsh.
+
+### Potentially usable memory
+ - x87 FPU (or MMX) registers
+ - x87 float control registers
+ - ymm0 - ymm15
 
 ### Memory map
 |      | 0x0 - 0x8 | 0x9 - 0xF |
@@ -24,14 +30,19 @@ A shell that doesn't rely on stack or heap allocation.  Keep commands short; the
 | 0x30 | **argv    | **argv    |
 | 0x40 | argv[0]   | argv[1]   |
 | 0x50 | argv[2]   | argv[3]   |
-| 0x60 | NULL      |           |
-| 0x70 |           |           |
+| 0x60 | argv[4]   | argv[5]   |
+| 0x70 | NULL      |           |
+
+## Building
+ - `make regular`: build without debug symbols
+ - `make debug`: build with debug symbols
 
 ## Features
- - uses only 128 bytes of RAM (the Linux x86-64 red zone)
+ - uses only 128 bytes of RAM
  - all environment variables defined at launch are passed to children
  - basic builtin support
- - extensive use of SIMD instructions to speed up data processing
+ - basic variable substitution support
+ - extensive use of SIMD instructions to speed up (?) data processing
 
 `old_variants` contains older versions of smdsh that didn't work for various reasons.
  - `smdsh_xmm_str.s` used SSE string processing instructions for everything, which was a huge hassle and hard to read and adjust.  Better method is to use regular cmp and mask instructions.

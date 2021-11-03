@@ -1,21 +1,31 @@
-# shell entirely within AVX registers
+# A simd shell!
 
-# to run:
-# $ clang -nostdlib smdsh.s -o smdsh && ./smdsh
-
-# usable memory (assuming AVX2 support):
-# x86 registers, r8 - r15
-# xmm0 - xmm7, xmm8 - xmm15, ymm0 - ymm15
-# x87 float registers (or MMX registers)
-# x87 float control registers
-# 128-byte red zone after rsp
+#define Version "0.4"
 
 # red zone memory map
 
-.equ Argv, 0
-.equ Argv_arg, 16
-.equ Argv_ptr, 64 # table of 7 *argv elements + NULL
-.equ Argv_end, 120
+#define Argv 0
+#define Argv_arg 16
+#define Argv_ptr 64
+#define Argv_end 120
+
+#define Arg_set 0, 1, 2, 3, 4, 5
+#define Var_set 0, 1, 2, 3, 4, 5
+
+# colors for output
+
+#define Yellow "\x1B[1;33m"
+#define Green "\x1B[32m"
+#define BW "\x1B[0m"
+
+# global register usage
+
+# rbp -> base of red zone
+# r8 -> **env
+
+# xmm0 -> command
+# xmm1-xmm5 -> args
+# xmm10-xmm15 -> variables
 
 .global _start
 
@@ -23,7 +33,7 @@
 
 # read text into str (xmm), clobbering mask (xmm) and returning number of chars in count (gpr)
 .macro Read str, mask, count
-	cmpb $'\n', (%r9) # check if we need to do anything at all
+	cmpb $'\n', (%rbp) # check if we need to do anything at all
 	jz L2_\@
 
 	vmovdqu simd_one, \mask
@@ -33,7 +43,7 @@ L0_\@:
 	# read()
 	xor %rax, %rax
 	xor %rdi, %rdi
-	mov %r9, %rsi
+	mov %rbp, %rsi
 	mov $1, %rdx
 	syscall
 
@@ -42,13 +52,13 @@ L0_\@:
 	jz L1_\@
 
 	# test for arg delimiters or break character
-	cmpb $'\t', (%r9)
+	cmpb $'\t', (%rbp)
 	jz L1_\@
 
-	cmpb $' ', (%r9)
+	cmpb $' ', (%rbp)
 	jz L1_\@
 
-	cmpb $'\n', (%r9)
+	cmpb $'\n', (%rbp)
 	jz L1_\@
 
 	# insert the current string index in mask
@@ -57,7 +67,7 @@ L0_\@:
 
 	# insert the character read in str
 	vpslldq $1, \str, \str
-	vpinsrb $0, (%r9), \str, \str
+	vpinsrb $0, (%rbp), \str, \str
 
 	# increment index
 	inc \count
@@ -70,7 +80,35 @@ L1_\@:
 L2_\@:
 .endm
 
-# writes str (xmm) to the red zone and writes arg addresses into *argv table
+.macro Jmp_xmm_sub sub, str, reg, idx, end
+	cmp \idx, \reg
+	jnz L0_\@
+	vmovdqu \sub, \str
+	jmp \end
+L0_\@:
+	inc \idx
+.endm
+
+# replaces str (xmm) with xmm reg if str starts with the correct subst character
+# reg, reg2 are trashed
+.macro Sub_xmm_arg str, reg, reg2
+test_reg_\@:
+	pextrb $0, \str, \reg
+	cmp subst, \reg
+	jnz sub_end_\@
+
+	pextrb $1, \str, \reg
+	sub $0x30, \reg
+	mov $0, \reg2
+
+	.irp j, Var_set
+		Jmp_xmm_sub %xmm1\j, \str, \reg, \reg2, sub_end_\@
+	.endr
+
+sub_end_\@:
+.endm
+
+# writes str (xmm) or subst (xmm) to the red zone and writes arg addresses into *argv table
 # increments str_idx (gpr) and addr_idx (gpr) accordingly, clobbers mask (gpr), rcx
 # (works for multiple C strings in str, but not used this way)
 .macro Write_xmm_args str, str_idx, addr_idx, mask
@@ -79,6 +117,9 @@ L2_\@:
 	# put null mask in mask gpr
 	vpcmpeqb simd_zero, \str, %xmm7
 	vpmovmskb %xmm7, \mask
+
+	# sign extend mask so comparisons against 0b11 that fall off the end of the mask word still work
+	movsx \mask\()w, \mask
 
 L0_\@:
 	# test for 0b11 (two null bytes)
@@ -105,12 +146,14 @@ L1_\@:
 .endm
 
 # wrapper for Write_xmm_args, dumps all xmm registers memory in a packed fashion
+# ex:
+# Write_all_argv <reg>, <reg>, <reg>, 4 # dumps all xmm registers from xmm0 to xmm<count>
 .macro Write_all_argv cmd_idx, argv_idx, mask
-	lea Argv(%r9), \cmd_idx # command string index
-	lea (Argv_ptr + 8)(%r9), \argv_idx # *argv index
+	lea Argv(%rbp), \cmd_idx # command string index
+	lea (Argv_ptr + 8)(%rbp), \argv_idx # *argv index
 
 	# pack args together in red zone and write *argv pointers
-	.irp i, 0, 1, 2, 3
+	.irp i, Arg_set
 		Write_xmm_args %xmm\i, \cmd_idx, \argv_idx, \mask
 	.endr
 
@@ -122,6 +165,16 @@ L1_\@:
 	mov $1, %rax
 	mov $1, %rdi
 	lea \label, %rsi
+	mov \len, %rdx
+	syscall
+.endm
+
+# prints memory pointed to by reg
+.macro Print_reg reg, len
+	# write()
+	mov $1, %rax
+	mov $1, %rdi
+	mov \reg, %rsi
 	mov \len, %rdx
 	syscall
 .endm
@@ -159,7 +212,7 @@ L2_\@:
 .endm
 
 _start:
-	lea -128(%rsp), %r9 # legal red zone is rsp - 1 to rsp - 128
+	lea -128(%rsp), %rbp # legal red zone is rsp - 1 to rsp - 128
 
 	# find **env and put in r8
 	mov (%rsp), %r8 # get argc
@@ -196,21 +249,21 @@ cpu_check:
 	Print newline, $1
 
 reset:
-	.irp i, 0, 1, 2, 3
+	.irp i, Arg_set
 		vpxor %xmm\i, %xmm\i, %xmm\i
 	.endr
 
 rd_cmd:
 	Print prompt, $(prompt_end - prompt)
 
-	movb $0, (%r9) # clear newline from previous cmd
+	movb $0, (%rbp) # clear newline from previous cmd
 
 	# use palignr to move xmm registers into ymm
 
 	vpxor %xmm6, %xmm6, %xmm6
 
-	# read 4 commands
-	.irp i, 0, 1, 2, 3
+	# read command and args
+	.irp i, Arg_set
 		Read %xmm\i, %xmm7, %r10
 
 		# replace spaces with null bytes
@@ -222,6 +275,8 @@ rd_cmd:
 		# arg3: written if mask < 0x80
 		# arg4: dest
 		vpblendvb %xmm7, %xmm6, %xmm\i, %xmm\i
+
+		Sub_xmm_arg %xmm\i, %r12, %r11
 	.endr
 
 try_builtin:
@@ -231,20 +286,23 @@ try_builtin:
 	Jmp_str %xmm0, cmd_exit, exit
 	Jmp_str %xmm0, cmd_cd, cd
 
+	Jmp_str %xmm0, cmd_set, set
+	Jmp_str %xmm0, cmd_get, get
+
 write_argv:
-	mov %r9, Argv_ptr(%r9) # set argv[0]
+	mov %rbp, Argv_ptr(%rbp) # set argv[0]
 
 	Write_all_argv %r15, %r14, %r13
 
 write_end_argv:
-	movq $0, (Argv_end)(%r9)
+	movq $0, (Argv_end)(%rbp)
 
 is_parent:
 	# fork()
 	mov $57, %rax
 	syscall
 
-	# if child, call exec()
+	# ...if child, call exec()
 	cmp $0, %rax
 	jz do_exec
 
@@ -265,8 +323,8 @@ wait_exec:
 do_exec:
 	# try cmd itself with execve()
 	mov $59, %rax
-	lea Argv(%r9), %rdi # create *filename
-	lea Argv_ptr(%r9), %rsi # create **argv
+	lea Argv(%rbp), %rdi # create *filename
+	lea Argv_ptr(%rbp), %rsi # create **argv
 	mov %r8, %rdx # copy **env
 	syscall
 
@@ -280,7 +338,7 @@ do_exec:
 	Write_all_argv %r15, %r14, %r13
 	syscall
 
-	# error out if both tries failed
+	# bail out if both tries failed
 	Print err_msg, $(err_msg_end - err_msg)
 
 	# exit()
@@ -304,11 +362,42 @@ exit:
 cd:
 	# chdir()
 	mov $80, %rax
-	vmovdqu %xmm1, Argv_arg(%r9)
-	lea Argv_arg(%r9), %rdi # new directory
+	vmovdqu %xmm1, Argv_arg(%rbp)
+	lea Argv_arg(%rbp), %rdi # new directory
 	syscall
 
 	jmp reset
+
+set:
+	.irp i, Var_set
+		Jmp_str %xmm1, num_\i, set_1\i
+	.endr
+
+	Print get_set_err_msg, $(get_set_err_msg_end - get_set_err_msg)
+	jmp reset
+
+.irp i, Var_set
+set_1\i:
+	movdqa %xmm2, %xmm1\i
+	jmp reset
+.endr
+
+get:
+	.irp i, Var_set
+		Jmp_str %xmm1, num_\i, get_1\i
+	.endr
+
+	Print get_set_err_msg, $(get_set_err_msg_end - get_set_err_msg)
+	jmp reset
+
+.irp i, Var_set
+get_1\i:
+	movdqu %xmm1\i, (%rbp)
+	Print get_prefix, $(get_prefix_end - get_prefix)
+	Print_reg %rbp, $16
+	Print get_suffix, $(get_suffix_end - get_suffix)
+	jmp reset
+.endr
 
 cmd_help:
 	.asciz "help"
@@ -322,6 +411,8 @@ help_msg:
 	.ascii "version: print version\n"
 	.ascii "exit: exit the shell\n"
 	.ascii "help: show this help menu\n"
+	.ascii "get <n>: prints contents of variable slot <n>\n"
+	.ascii "set <n>: sets contents of variable slot <n>\n"
 
 	.asciz "\n"
 help_msg_end:
@@ -330,7 +421,9 @@ cmd_version:
 	.asciz "version"
 
 ver_msg:
-	.ascii "smdsh v0.3\n"
+	.ascii "smdsh v"
+	.ascii Version
+	.ascii "\n"
 ver_msg_end:
 
 cmd_exit:
@@ -339,16 +432,35 @@ cmd_exit:
 cmd_cd:
 	.asciz "cd"
 
+cmd_set:
+	.asciz "set"
+
+cmd_get:
+	.asciz "get"
+
+get_prefix:
+	.asciz "storing \""
+get_prefix_end:
+
+get_suffix:
+	.asciz "\"\n"
+get_suffix_end:
+
 err_msg:
-	.asciz "cannot locate executable!\n"
+	.ascii Yellow
+	.ascii "cannot locate executable!\n"
+	.asciz BW
 err_msg_end:
+
+get_set_err_msg:
+	.ascii Yellow
+	.ascii "invalid index!\n"
+	.asciz BW
+get_set_err_msg_end:
 
 prompt:
 	.asciz "smdsh $ "
 prompt_end:
-
-space_msg:
-	.asciz " "
 
 path_usr_bin:
 	.ascii "/usr/bin/"
@@ -371,15 +483,31 @@ check_avx512:
 check_avx512_end:
 
 check_yes:
-	.asciz "[supported]\n"
+	.ascii "["
+	.ascii Green
+	.ascii "supported"
+	.ascii BW
+	.asciz "]\n"
 check_yes_end:
 
 check_no:
-	.asciz "[unsupported]\n"
+	.ascii "["
+	.ascii Yellow
+	.ascii "unsupported"
+	.ascii BW
+	.asciz "]\n"
 check_no_end:
+
+.irp i, Var_set
+	num_\i:
+		.asciz "\i"
+.endr
 
 newline:
 	.byte '\n'
+
+subst:
+	.byte '$'
 
 # 32 bytes of zeros
 simd_zero:

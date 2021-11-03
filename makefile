@@ -1,6 +1,6 @@
 debug:
-	@clang -nostdlib -nopie -glldb smdsh.s -o smdsh
+	@clang -Wall -Wextra -nostdlib -nopie -glldb smdsh.S -o smdsh
 
 regular:
-	@clang -nostdlib -nopie smdsh.s -o smdsh
+	@clang -Wall -Wextra -nostdlib -nopie smdsh.S -o smdsh
 
