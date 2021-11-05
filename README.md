@@ -2,6 +2,8 @@
 
 A shell that doesn't rely on stack or heap allocation.  Keep commands short; there isn't a lot of error checking here.
 
+The assembly here is optimized for runtime size and makes fairly heavy use of GAS macros.  Not sure if that was a good idea or not.
+
 ## Rules
 1. no heap memory allocation (malloc, brk, mmap, new processes, etc.)
 2. no stack allocation (meaning the adjustment of rbp or rsp)
@@ -15,11 +17,12 @@ A shell that doesn't rely on stack or heap allocation.  Keep commands short; the
  - regular x86 and x64 registers
  - xmm0 - xmm15
    - NOTE: AVX2 is required to run smdsh.
+ - x87 FPU stack registers
 
 ### Potentially usable memory
- - x87 FPU (or MMX) registers
- - x87 float control registers
+ - x87 float control/status registers
  - ymm0 - ymm15
+ - zmm0 - zmm15 on machines with AVX512
 
 ### Memory map
 |      | 0x0 - 0x8 | 0x9 - 0xF |
@@ -42,6 +45,7 @@ A shell that doesn't rely on stack or heap allocation.  Keep commands short; the
  - all environment variables defined at launch are passed to children
  - basic builtin support
  - basic variable substitution support
+ - basic command line option checking
  - extensive use of SIMD instructions to speed up (?) data processing
 
 `old_variants` contains older versions of smdsh that didn't work for various reasons.

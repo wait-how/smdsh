@@ -27,6 +27,8 @@
 # xmm1-xmm5 -> args
 # xmm10-xmm15 -> variables
 
+# st0 -> command line mode (executes anything from stdin and exits)
+
 .global _start
 
 .text
@@ -90,8 +92,8 @@ L0_\@:
 .endm
 
 # replaces str (xmm) with xmm reg if str starts with the correct subst character
-# reg, reg2 are trashed
-.macro Sub_xmm_arg str, reg, reg2
+# reg, idx are trashed
+.macro Sub_xmm_arg str, reg, idx
 test_reg_\@:
 	pextrb $0, \str, \reg
 	cmp subst, \reg
@@ -99,11 +101,13 @@ test_reg_\@:
 
 	pextrb $1, \str, \reg
 	sub $0x30, \reg
-	mov $0, \reg2
+	mov $0, \idx
 
 	.irp j, Var_set
-		Jmp_xmm_sub %xmm1\j, \str, \reg, \reg2, sub_end_\@
+		Jmp_xmm_sub %xmm1\j, \str, \reg, \idx, sub_end_\@
 	.endr
+
+	# do nothing if no match
 
 sub_end_\@:
 .endm
@@ -146,8 +150,7 @@ L1_\@:
 .endm
 
 # wrapper for Write_xmm_args, dumps all xmm registers memory in a packed fashion
-# ex:
-# Write_all_argv <reg>, <reg>, <reg>, 4 # dumps all xmm registers from xmm0 to xmm<count>
+# cmd_idx, argv_idx, mask trashed
 .macro Write_all_argv cmd_idx, argv_idx, mask
 	lea Argv(%rbp), \cmd_idx # command string index
 	lea (Argv_ptr + 8)(%rbp), \argv_idx # *argv index
@@ -160,6 +163,7 @@ L1_\@:
 	movq $0, -8(\argv_idx) # overwrite last address with a null pointer
 .endm
 
+# prints memory pointed to by absolute address
 .macro Print label, len
 	# write()
 	mov $1, %rax
@@ -218,6 +222,26 @@ _start:
 	mov (%rsp), %r8 # get argc
 	lea 16(%rsp, %r8, 8), %r8 # put 16 + (rsp + r8 * 8) (**env) in r8
 
+arg_check:
+	# skip if no args present
+	cmpq $1, (%rsp)
+	jz cpu_check
+
+	# get offset of arg, load into xmm register, and check it against valid strings
+	mov 16(%rsp), %r15
+	movdqu (%r15), %xmm0
+
+	Jmp_str %xmm0, arg_quiet, set_quiet
+
+	Print bad_shopt_msg, $(bad_shopt_msg_end - bad_shopt_msg)
+	jmp exit
+
+set_quiet:
+	# set quiet mode (disables startup cpu checks)
+	movq $1, (%rbp)
+	fildq (%rbp)
+	jmp reset
+
 cpu_check:
 	# check for SSE 4.2
 	Print check_sse, $(check_sse_end - check_sse)
@@ -249,18 +273,16 @@ cpu_check:
 	Print newline, $1
 
 reset:
-	.irp i, Arg_set
+	.irp i, Arg_set, 6
 		vpxor %xmm\i, %xmm\i, %xmm\i
 	.endr
 
-rd_cmd:
-	Print prompt, $(prompt_end - prompt)
-
 	movb $0, (%rbp) # clear newline from previous cmd
 
-	# use palignr to move xmm registers into ymm
+	Print prompt, $(prompt_end - prompt)
 
-	vpxor %xmm6, %xmm6, %xmm6
+rd_cmd:
+	# use vextracti128/vinserti128 to get upper 128 bits of ymm registers
 
 	# read command and args
 	.irp i, Arg_set
@@ -281,7 +303,11 @@ rd_cmd:
 
 try_builtin:
 	# handle builtins
+
+	Jmp_str %xmm0, cmd_empty, empty
+
 	Jmp_str %xmm0, cmd_help, help
+
 	Jmp_str %xmm0, cmd_version, version
 	Jmp_str %xmm0, cmd_exit, exit
 	Jmp_str %xmm0, cmd_cd, cd
@@ -346,6 +372,9 @@ do_exec:
 	mov $1, %rdi
 	syscall
 
+empty:
+	jmp reset
+
 help:
 	Print help_msg, $(help_msg_end - help_msg)
 	jmp reset
@@ -399,6 +428,10 @@ get_1\i:
 	jmp reset
 .endr
 
+cmd_empty:
+	.byte 0
+cmd_empty_end:
+
 cmd_help:
 	.asciz "help"
 
@@ -413,6 +446,9 @@ help_msg:
 	.ascii "help: show this help menu\n"
 	.ascii "get <n>: prints contents of variable slot <n>\n"
 	.ascii "set <n>: sets contents of variable slot <n>\n"
+
+	.ascii "\nshell flags:\n"
+	.ascii "-quiet: skip instruction checks at startup\n"
 
 	.asciz "\n"
 help_msg_end:
@@ -457,6 +493,12 @@ get_set_err_msg:
 	.ascii "invalid index!\n"
 	.asciz BW
 get_set_err_msg_end:
+
+bad_shopt_msg:
+	.ascii Yellow
+	.ascii "invalid option!\n"
+	.asciz BW
+bad_shopt_msg_end:
 
 prompt:
 	.asciz "smdsh $ "
@@ -520,4 +562,7 @@ simd_one:
 # 32 spaces
 simd_space:
 	.fill 32, 1, ' '
+
+arg_quiet:
+	.asciz "-quiet"
 
