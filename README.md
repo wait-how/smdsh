@@ -9,9 +9,6 @@ Requires clang.
  - `make regular`: build without debug symbols
  - `make debug`: build with debug symbols
 
-## Example Output
-
-
 ## Rules
 1. No heap memory allocation (malloc, brk, mmap, new processes, etc.)
 2. No stack allocation (meaning the adjustment of rbp or rsp)
@@ -37,6 +34,9 @@ Requires clang.
  - x86 SIMD register width impacts maximum length of shell commands
    - 16 bytes per command/arg
    - maximum of 6 args
+
+## Example Output
+![example output](output.png)
 
 ## Notes
 `old_variants` contains older versions of smdsh that didn't work for various reasons.
