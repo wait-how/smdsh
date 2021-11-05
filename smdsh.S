@@ -3,7 +3,6 @@
 #define Version "0.4"
 
 # red zone memory map
-
 #define Argv 0
 #define Argv_arg 16
 #define Argv_ptr 64
@@ -13,15 +12,21 @@
 #define Var_set 0, 1, 2, 3, 4, 5
 
 # colors for output
-
 #define Yellow "\x1B[1;33m"
 #define Green "\x1B[32m"
 #define BW "\x1B[0m"
+
+# where to look for executables if the command is not an absolute path
+#define Alt_path "/usr/bin/"
+
+# the prompt to show
+#define Prompt "smdsh $ "
 
 # global register usage
 
 # rbp -> base of red zone
 # r8 -> **env
+# r9 -> exit status of last command
 
 # xmm0 -> command
 # xmm1-xmm5 -> args
@@ -125,6 +130,7 @@ sub_end_\@:
 	# sign extend mask so comparisons against 0b11 that fall off the end of the mask word still work
 	movsx \mask\()w, \mask
 
+test\@:
 L0_\@:
 	# test for 0b11 (two null bytes)
 	mov \mask, %rcx
@@ -270,6 +276,10 @@ cpu_check:
 	bt $16, %rbx
 	Check_feature_flag 0
 
+	Print check_amx, $(check_amx_end - check_amx)
+	bt $24, %rdx
+	Check_feature_flag 0
+
 	Print newline, $1
 
 reset:
@@ -277,11 +287,19 @@ reset:
 		vpxor %xmm\i, %xmm\i, %xmm\i
 	.endr
 
-	movb $0, (%rbp) # clear newline from previous cmd
+	movb $'~', (%rbp) # clear end character from previous cmd
 
-	Print prompt, $(prompt_end - prompt)
+	cmp $0, %r9 # see if last command exited with non-zero error code
+	jnz show_warn
+	jmp rd_cmd
+
+show_warn:
+	Print nz_exit, $(nz_exit_end - nz_exit)
+	mov $0, %r9 # clear exit code in case we execute a builtin
 
 rd_cmd:
+	Print prompt, $(prompt_end - prompt)
+
 	# use vextracti128/vinserti128 to get upper 128 bits of ymm registers
 
 	# read command and args
@@ -298,6 +316,7 @@ rd_cmd:
 		# arg4: dest
 		vpblendvb %xmm7, %xmm6, %xmm\i, %xmm\i
 
+		# substitute value if string starts with '$n'
 		Sub_xmm_arg %xmm\i, %r12, %r11
 	.endr
 
@@ -333,17 +352,22 @@ is_parent:
 	jz do_exec
 
 wait_exec:
-	# int waitid(int which, pid_t upid, <*struct>, int options, <*struct>)
+	# int waitid(int which, pid_t upid, struct siginfo *infop, int options, struct rusage *ru)
 	mov $247, %rax
-	mov $0, %rdi # P_ALL (wait for any child to return, ignore upid)
-	mov $0, %rsi # ignored because of P_ALL
-	mov $0, %rdx # NULL struct ptr
-	mov $4, %r10 # WEXITED (check which children exited)
+	mov $0, %rdi # which = P_ALL (wait for any child to return, ignore upid)
+	mov $0, %rsi # upid = 0 (ignored because of P_ALL)
+	mov %rbp, %rdx # *infop = start of red zone
+	mov $4, %r10 # options = WEXITED (check which children exited)
 	mov %r8, %r15 # save r8
-	mov $0, %r8 # NULL struct ptr
+	mov $0, %r8 # *ru = NULL
 	syscall
 
+	# NOTE: waitid() trashes all 128 bytes of the red zone!
+
 	mov %r15, %r8 # restore r8
+
+	mov 24(%rbp), %r9 # save exit status of child
+
 	jmp reset
 
 do_exec:
@@ -356,8 +380,8 @@ do_exec:
 
 	# try /usr/bin/<exec>
 	mov $59, %rax
-	mov path_usr_bin, %r13
-	vpslldq $(path_usr_bin_end - path_usr_bin), %xmm0, %xmm0
+	mov alt_path, %r13
+	vpslldq $(alt_path_end - alt_path), %xmm0, %xmm0
 	pinsrq $0, %r13, %xmm0
 	pinsrb $8, %r13, %xmm0
 
@@ -500,13 +524,19 @@ bad_shopt_msg:
 	.asciz BW
 bad_shopt_msg_end:
 
+nz_exit:
+	.ascii Yellow
+	.ascii "/!\\ "
+	.ascii BW
+nz_exit_end:
+
 prompt:
-	.asciz "smdsh $ "
+	.asciz Prompt
 prompt_end:
 
-path_usr_bin:
-	.ascii "/usr/bin/"
-path_usr_bin_end:
+alt_path:
+	.ascii Alt_path
+alt_path_end:
 
 check_sse:
 	.asciz "sse 4.2\t"
@@ -523,6 +553,10 @@ check_avx2_end:
 check_avx512:
 	.asciz "avx-512\t"
 check_avx512_end:
+
+check_amx:
+	.asciz "amx\t"
+check_amx_end:
 
 check_yes:
 	.ascii "["

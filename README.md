@@ -1,6 +1,6 @@
 # smdsh
 
-A shell that doesn't rely on stack or heap allocation.  Keep commands short; there isn't a lot of error checking here.
+A Linux shell that doesn't rely on stack or heap allocation.  Keep commands short; there isn't a lot of error checking here.
 
 The assembly here is optimized for runtime size and makes fairly heavy use of GAS macros.  Not sure if that was a good idea or not.
 
@@ -35,6 +35,8 @@ Requires clang.
 ## Limitations
  - No Windows support as it doesn't have a red zone
  - x86 SIMD register width impacts maximum length of shell commands
+   - 16 bytes per command/arg
+   - maximum of 6 args
 
 ## Notes
 `old_variants` contains older versions of smdsh that didn't work for various reasons.
@@ -59,5 +61,6 @@ Requires clang.
  - (possibly) using the following memory locations:
    - x87 float control/status registers
    - ymm0 - ymm15
+     - This is difficult to use, as there isn't an easy way to refer to the upper half of a ymm register.
    - zmm0 - zmm15 on machines with AVX512
    - AMX matrix registers (if I get access to a machine with this feature)
