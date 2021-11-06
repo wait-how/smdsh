@@ -17,7 +17,8 @@
 #define BW "\x1B[0m"
 
 # where to look for executables if the command is not an absolute path
-#define Alt_path "/usr/bin/"
+# NOTE: length of this is hardcoded - don't change it!
+#define Alt_path "/bin/"
 
 # the prompt to show
 #define Prompt "smdsh $ "
@@ -402,12 +403,12 @@ do_exec:
 	mov %r8, %rdx # copy **env
 	syscall
 
-	# try /usr/bin/<exec>
+	# try alternate path
 	mov $59, %rax
 	mov alt_path, %r13
 	vpslldq $(alt_path_end - alt_path), %xmm0, %xmm0
-	pinsrq $0, %r13, %xmm0
-	pinsrb $8, %r13, %xmm0
+	pinsrd $0, %r13d, %xmm0
+	pinsrb $4, %r13, %xmm0
 
 	Write_all_argv %r15, %r14, %r13
 	syscall
@@ -417,7 +418,7 @@ do_exec:
 
 	# exit()
 	mov $60, %rax
-	mov $1, %rdi
+	mov $0, %rdi
 	syscall
 
 empty:
