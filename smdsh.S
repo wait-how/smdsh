@@ -32,7 +32,8 @@
 # xmm1-xmm5 -> args
 # xmm10-xmm15 -> variables
 
-# st0 -> command line mode (executes anything from stdin and exits)
+# st0 -> 0
+# st1 -> quiet mode (do not print any extra text)
 
 .global _start
 
@@ -53,6 +54,10 @@ L0_\@:
 	mov %rbp, %rsi
 	mov $1, %rdx
 	syscall
+
+	# test if there are no more bytes to read (EOF, pipe closed, etc)
+	cmp $0, %rax
+	jz exit
 
 	# test if out of space in str
 	cmp $16, \count
@@ -130,7 +135,6 @@ sub_end_\@:
 	# sign extend mask so comparisons against 0b11 that fall off the end of the mask word still work
 	movsx \mask\()w, \mask
 
-test\@:
 L0_\@:
 	# test for 0b11 (two null bytes)
 	mov \mask, %rcx
@@ -170,23 +174,39 @@ L1_\@:
 .endm
 
 # prints memory pointed to by absolute address
-.macro Print label, len
+.macro Print label, len, interactive=0
+.if \interactive
+	# check if we can print
+	fcomi %st(1), %st(0)
+	jnz L0_\@
+.endif
+
 	# write()
 	mov $1, %rax
 	mov $1, %rdi
 	lea \label, %rsi
 	mov \len, %rdx
 	syscall
+
+L0_\@:
 .endm
 
 # prints memory pointed to by reg
-.macro Print_reg reg, len
+.macro Print_reg reg, len, interactive=0
+.if \interactive
+	# check if we can print
+	fcomi %st(1), %st(0)
+	jnz L0_\@
+.endif
+
 	# write()
 	mov $1, %rax
 	mov $1, %rdi
 	mov \reg, %rsi
 	mov \len, %rdx
 	syscall
+
+L0_\@:
 .endm
 
 # jumps to dst if str != cmp
@@ -199,7 +219,7 @@ L1_\@:
 .macro Check_feature_flag fatal
 	jc L1_\@
 L0_\@:
-	Print check_no, $(check_no_end - check_no)
+	Print check_no, $(check_no_end - check_no), 1
 .if \fatal
 	mov $60, %rax
 	mov $1, %rdi
@@ -208,7 +228,7 @@ L0_\@:
 	jmp L2_\@
 .endif
 L1_\@:
-	Print check_yes, $(check_yes_end - check_yes)
+	Print check_yes, $(check_yes_end - check_yes), 1
 L2_\@:
 .endm
 
@@ -246,25 +266,27 @@ set_quiet:
 	# set quiet mode (disables startup cpu checks)
 	movq $1, (%rbp)
 	fildq (%rbp)
-	jmp reset
+
+set_tos:
+	fldz # push 0 on top of stack for later comparisons
 
 cpu_check:
 	# check for SSE 4.2
-	Print check_sse, $(check_sse_end - check_sse)
+	Print check_sse, $(check_sse_end - check_sse), 1
 	mov $1, %rax
 	cpuid
 	bt $20, %rcx
 	Check_feature_flag 1
 
 	# check for AVX
-	Print check_avx, $(check_avx_end - check_avx)
+	Print check_avx, $(check_avx_end - check_avx), 1
 	mov $1, %rax
 	cpuid
 	bt $28, %rcx
 	Check_feature_flag 1
 
 	# check for AVX2
-	Print check_avx2, $(check_avx2_end - check_avx2)
+	Print check_avx2, $(check_avx2_end - check_avx2), 1
 	mov $7, %rax
 	xor %rcx, %rcx
 	cpuid
@@ -272,33 +294,35 @@ cpu_check:
 	Check_feature_flag 1
 
 	# see if we have AVX512 (not required)
-	Print check_avx512, $(check_avx512_end - check_avx512)
+	Print check_avx512, $(check_avx512_end - check_avx512), 1
 	bt $16, %rbx
 	Check_feature_flag 0
 
-	Print check_amx, $(check_amx_end - check_amx)
+	# see if we have AMX (not even mainlined in the kernel)
+	Print check_amx, $(check_amx_end - check_amx), 1
 	bt $24, %rdx
 	Check_feature_flag 0
 
-	Print newline, $1
+	Print newline, $1, 1
 
 reset:
+	cmp $0, %r9 # see if last command exited with non-zero error code
+	jnz show_warn
+	jmp show_prompt
+
+show_warn:
+	Print nz_exit, $(nz_exit_end - nz_exit), 1
+	mov $0, %r9 # clear exit code in case we execute a builtin
+
+show_prompt:
+	Print prompt, $(prompt_end - prompt), 1
+
+rd_cmd:
 	.irp i, Arg_set, 6
 		vpxor %xmm\i, %xmm\i, %xmm\i
 	.endr
 
-	movb $'~', (%rbp) # clear end character from previous cmd
-
-	cmp $0, %r9 # see if last command exited with non-zero error code
-	jnz show_warn
-	jmp rd_cmd
-
-show_warn:
-	Print nz_exit, $(nz_exit_end - nz_exit)
-	mov $0, %r9 # clear exit code in case we execute a builtin
-
-rd_cmd:
-	Print prompt, $(prompt_end - prompt)
+	movb $'?', (%rbp) # clear end character from previous cmd
 
 	# use vextracti128/vinserti128 to get upper 128 bits of ymm registers
 
@@ -472,7 +496,7 @@ help_msg:
 	.ascii "set <n>: sets contents of variable slot <n>\n"
 
 	.ascii "\nshell flags:\n"
-	.ascii "-quiet: skip instruction checks at startup\n"
+	.ascii "-quiet: don't print interactive shell text (use if piping or redirecting)\n"
 
 	.asciz "\n"
 help_msg_end:
@@ -499,29 +523,29 @@ cmd_get:
 	.asciz "get"
 
 get_prefix:
-	.asciz "storing \""
+	.ascii "storing \""
 get_prefix_end:
 
 get_suffix:
-	.asciz "\"\n"
+	.ascii "\"\n"
 get_suffix_end:
 
 err_msg:
 	.ascii Yellow
 	.ascii "cannot locate executable!\n"
-	.asciz BW
+	.ascii BW
 err_msg_end:
 
 get_set_err_msg:
 	.ascii Yellow
 	.ascii "invalid index!\n"
-	.asciz BW
+	.ascii BW
 get_set_err_msg_end:
 
 bad_shopt_msg:
 	.ascii Yellow
 	.ascii "invalid option!\n"
-	.asciz BW
+	.ascii BW
 bad_shopt_msg_end:
 
 nz_exit:
@@ -531,7 +555,7 @@ nz_exit:
 nz_exit_end:
 
 prompt:
-	.asciz Prompt
+	.ascii Prompt
 prompt_end:
 
 alt_path:
@@ -563,7 +587,7 @@ check_yes:
 	.ascii Green
 	.ascii "supported"
 	.ascii BW
-	.asciz "]\n"
+	.ascii "]\n"
 check_yes_end:
 
 check_no:
@@ -571,7 +595,7 @@ check_no:
 	.ascii Yellow
 	.ascii "unsupported"
 	.ascii BW
-	.asciz "]\n"
+	.ascii "]\n"
 check_no_end:
 
 .irp i, Var_set

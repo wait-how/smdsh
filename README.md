@@ -4,10 +4,11 @@ A Linux shell that doesn't rely on stack or heap allocation.  Keep commands shor
 
 The assembly here is optimized for runtime size and makes fairly heavy use of GAS macros.  Not sure if that was a good idea or not.
 
-## Building
+## Building / Testing
 Requires clang.
  - `make regular`: build without debug symbols
  - `make debug`: build with debug symbols
+ - `make test`: runs basic test suite script
 
 ## Rules
 1. No heap memory allocation (malloc, brk, mmap, new processes, etc.)
@@ -26,7 +27,7 @@ Requires clang.
  - *Kinda* support for the following:
    - builtins
    - variable substitution
-   - command line flag checking
+   - command line pipe mode (`-quiet`)
    - environment variables (read only)
 
 ## Limitations
@@ -56,7 +57,6 @@ Requires clang.
 | 0x70 | argv[6]   | NULL      |
 
 ## TODOs
- - pipes/redirection
  - if statements
  - (possibly) using the following memory locations:
    - x87 float control/status registers
