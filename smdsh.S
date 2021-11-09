@@ -11,6 +11,9 @@
 #define Arg_set 0, 1, 2, 3, 4, 5
 #define Var_set 0, 1, 2, 3, 4, 5
 
+#define Opt_zero 0
+#define Opt_quiet 1
+
 # colors for output
 #define Yellow "\x1B[1;33m"
 #define Green "\x1B[32m"
@@ -48,12 +51,14 @@
 	vmovdqu simd_one, \mask
 	mov $0, \count
 
-L0_\@:
-	# read()
-	xor %rax, %rax
+	# set up most of read() syscall
 	xor %rdi, %rdi
 	mov %rbp, %rsi
 	mov $1, %rdx
+
+L0_\@:
+	# read()
+	xor %rax, %rax
 	syscall
 
 	# test if there are no more bytes to read (EOF, pipe closed, etc)
@@ -196,7 +201,7 @@ L0_\@:
 .macro Print_reg reg, len, interactive=0
 .if \interactive
 	# check if we can print
-	fcomi %st(1), %st(0)
+	fcomi %st(Opt_quiet), %st(Opt_zero)
 	jnz L0_\@
 .endif
 
