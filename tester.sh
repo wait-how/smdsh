@@ -20,6 +20,7 @@ check "cd ..\ncd smdsh\nfile README.md\n" "README.md: ASCII text"
 # check variable storage
 check "get 0" "storing \"\""
 check "set 0 README.md\nfile \$0\n" "README.md: ASCII text"
+check "set 0 README.md\nget 0" "storing \"README.md\""
 
 # check builtins
 check "exit" ""

@@ -31,7 +31,7 @@ Requires clang.
    - environment variables (read only)
 
 ## Limitations
- - No Windows support as it doesn't have a red zone
+ - No Windows support as the ABI doesn't have a red zone
  - x86 SIMD register width impacts maximum length of shell commands
    - 16 bytes per command/arg
    - maximum of 6 args
